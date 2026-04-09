@@ -77,8 +77,8 @@ jobs:
           
           content = content.replace('buildTypes {', 'buildTypes {\\n        release {\\n            signingConfig signingConfigs.release\\n        }')
           
-          # رفع رقم الإصدار تلقائياً بناءً على رقم العملية
-          run_number = os.getenv('GITHUB_RUN_NUMBER', '1')
+          # رفع رقم الإصدار تلقائياً بناءً على رقم العملية (إضافة 100 لضمان تجاوز الإصدارات السابقة)
+          run_number = int(os.getenv('GITHUB_RUN_NUMBER', '1')) + 100
           content = re.sub(r'versionCode \d+', f'versionCode {run_number}', content)
           
           with open('$GRADLE_FILE', 'w') as f:
