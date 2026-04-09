@@ -1,0 +1,8 @@
+{
+  "name": "Sanctuary",
+  "description": "A high-performance cinematic 3D reading environment featuring a 3D cover flow shelf, per-book time tracking, and deep work zen modes with gamified retention features.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

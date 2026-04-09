@@ -1,0 +1,45 @@
+{
+  "name": "sanctuary-reader",
+  "private": true,
+  "version": "1.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "tsc --noEmit",
+    "preview": "vite preview",
+    "mobile:assets": "npx @capacitor/assets generate --android",
+    "mobile:sync": "npx cap sync",
+    "mobile:build": "npm run build && npm run mobile:assets && npx cap sync"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/app": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/device": "^6.0.0",
+    "@capacitor/haptics": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0",
+    "@capacitor/share": "^6.0.0",
+    "@capacitor/filesystem": "^6.0.0",
+    "@capacitor/local-notifications": "^6.0.2",
+    "@capgo/capacitor-navigation-bar": "^6.0.0",
+    "@google/genai": "^1.42.0",
+    "@types/simple-peer": "^9.11.9",
+    "framer-motion": "^11.13.1",
+    "lucide-react": "^0.463.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "simple-peer": "^9.11.1",
+    "socket.io-client": "^4.8.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/assets": "^3.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.1"
+  }
+}
