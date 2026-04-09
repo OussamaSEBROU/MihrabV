@@ -249,6 +249,82 @@ export const communityService = {
     return importedBook;
   },
 
+  shareShelf: async (
+    shelf: ShelfData,
+    books: Book[],
+    userName: string,
+    lang: string
+  ): Promise<{ success: boolean; method: 'native' | 'download' | 'clipboard' }> => {
+    const JSZip = await _loadJSZip();
+    const zip = new JSZip();
+
+    const shelfBooks = books.filter(b => b.shelfId === shelf.id);
+
+    zip.file('meta.json', JSON.stringify({
+      version: '2.1.0',
+      exportedBy: userName,
+      exportedAt: new Date().toISOString(),
+      type: 'SHELF_ARCHIVE',
+      bookCount: shelfBooks.length,
+    }));
+
+    zip.file('shelf.json', JSON.stringify(shelf));
+
+    const booksFolder = zip.folder('books')!;
+    let exportedCount = 0;
+
+    for (const book of shelfBooks) {
+      const pdfData = await pdfStorage.getFile(book.id);
+
+      if (!pdfData || pdfData.byteLength < 512) {
+        console.warn(`[Mihrab/ShareShelf] Skipping "${book.title}" — binary missing or corrupt`);
+        continue;
+      }
+
+      const cleanBook = _sanitiseBookForExport(book);
+      booksFolder.file(`${book.id}.json`, JSON.stringify(cleanBook));
+      booksFolder.file(`${book.id}.pdf`, pdfData);
+      exportedCount++;
+    }
+
+    if (exportedCount === 0) {
+      throw new Error('NO_EXPORTABLE_BOOKS');
+    }
+
+    const content = await zip.generateAsync({
+      type: 'blob',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    });
+
+    const safeShelfName = shelf.name.replace(/[^\w\u0600-\u06FF]/g, '_');
+    const filename = `Mihrab_${safeShelfName}_${Date.now()}.zip`;
+    const file = new File([content], filename, { type: 'application/zip' });
+
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: shelf.name,
+        text:
+          lang === 'ar'
+            ? `شارك معي هذا الرف من المحراب: ${shelf.name}`
+            : `Check out this shelf from Mihrab: ${shelf.name}`,
+      });
+      return { success: true, method: 'native' };
+    }
+
+    // Fallback: trigger download
+    const uri = URL.createObjectURL(content);
+    const link = document.createElement('a');
+    link.href = uri;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(uri), 10_000);
+    return { success: true, method: 'download' };
+  },
+
   downloadFile: async (uri: string, filename: string, _lang: string): Promise<void> => {
     const link = document.createElement('a');
     link.href = uri;
