@@ -89,7 +89,10 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
   const [isZenMode, setIsZenMode] = useState(false);
   const [isNightMode, setIsNightMode] = useState(false);
   const [showControls, setShowControls] = useState(true);
+  
+  // ── OPTIMIZATION: Index-based Record for high performance ──
   const [pages, setPages] = useState<Record<number, string>>({});
+  
   const [currentPage, setCurrentPage] = useState(book.lastPage || 0);
   const [isLoading, setIsLoading] = useState(false);
   const [totalPages, setTotalPages] = useState(0);
@@ -163,10 +166,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
   const t = translations[lang];
   const isRTL = lang === 'ar';
   const fontClass = isRTL ? 'font-ar' : 'font-en';
-  // TRUE-READING TIMER: Only counts when PDF page is loaded AND visible.
-  // Uses pageReadyRef to gate counting — zero phantom seconds during PDF loading.
-  // Uses timerRef for immediate suspension on back-button click.
-  // Periodic sync every 30s ensures Dashboard/Notifications always reflect real-time reading.
   useEffect(() => {
     const syncDelta = () => {
       const total = sessionSecondsRef.current;
@@ -184,7 +183,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           setSessionSeconds(prev => {
             const next = prev + 1;
             sessionSecondsRef.current = next;
-            // Sync to storage every 30 seconds
             if (next % 30 === 0) syncDelta();
             return next;
           });
@@ -196,7 +194,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
         startTimer();
       } else {
         if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-        syncDelta(); // Save when app goes background
+        syncDelta();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -204,7 +202,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
     return () => {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      syncDelta(); // Final save on unmount
+      syncDelta();
     };
   }, [book.id]);
   const formatSessionTime = (totalSeconds: number) => {
@@ -310,11 +308,11 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
     }
   };
   useEffect(() => {
-    // ─── YIELD HELPER: real main-thread release, prevents UI freeze ──────────
     const yieldToMain = (): Promise<void> =>
       typeof (scheduler as any)?.yield === 'function'
         ? (scheduler as any).yield()
-        : new Promise(r => setTimeout(r, 4)); // 4ms = one frame budget
+        : new Promise(r => setTimeout(r, 4));
+    
     const loadPdf = async () => {
       setIsLoading(true); setIsPdfLoading(true);
       try {
@@ -324,6 +322,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           setPdfRequestSent(true); return;
         }
         if (!data) { setIsLoading(false); setIsPdfLoading(false); return; }
+        
         // ── OPTIMIZED PDF OPENING ──
         const pdf = await pdfjsLib.getDocument({ 
           data, 
@@ -331,6 +330,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           isEvalSupported: false,
           disableFontFace: false
         }).promise;
+        
         const numPages = pdf.numPages; setTotalPages(numPages);
         let rendering = false; 
         const queue: number[] = [];
@@ -339,6 +339,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
         const pageSlots: Record<number, string> = {};
         const thumbSlots: Record<number, string> = {};
         pdfDocRef.current = pdf;
+        
         // ── HIGH-RES PAGE RENDERER ──
         const flushQueue = async () => {
           if (rendering || queue.length === 0) return;
@@ -356,7 +357,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
               ctx.fillRect(0, 0, cv.width, cv.height);
               await p.render({ canvasContext: ctx, viewport: vp }).promise;
               pageSlots[idx] = cv.toDataURL('image/jpeg', 0.85);
-              // Aggressive Cleanup
               cv.width = 0; cv.height = 0;
               setPages(prev => ({ ...prev, [idx]: pageSlots[idx] }));
               await yieldToMain();
@@ -364,6 +364,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           }
           rendering = false;
         };
+        
         // ── THUMBNAIL RENDERER ──
         const flushThumbQueue = async () => {
           if (thumbRendering || thumbQueue.length === 0) return;
@@ -389,9 +390,10 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           }
           thumbRendering = false;
         };
-        const WINDOW = 2; // Real-time window
+        
+        const WINDOW = 2;
         const enqueueWindow = (center: number, isThumbnailRequest = false) => {
-          // ── MEMORY EVICTION: Critical for large PDFs ──
+          // ── MEMORY EVICTION ──
           Object.keys(pageSlots).forEach(key => {
             const idx = parseInt(key);
             if (Math.abs(idx - center) > WINDOW + 1) {
@@ -403,13 +405,14 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
               });
             }
           });
-          // ── PRIORITY QUEUE ──
+          
           const priority = [center, center + 1, center - 1, center + 2, center - 2]
             .filter(i => i >= 0 && i < numPages && !pageSlots[i]);
           for (const p of priority.reverse()) {
             if (!queue.includes(p)) queue.unshift(p);
           }
           flushQueue();
+          
           if (isThumbnailRequest) {
             const start = Math.max(0, center - 5);
             const end = Math.min(numPages, center + 15);
@@ -429,13 +432,14 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
         setIsLoading(false); setIsPdfLoading(false);
       }
     };
-    pageReadyRef.current = false; // Reset on new load cycle
+    pageReadyRef.current = false;
     loadPdf();
     return () => {
       pageReadyRef.current = false;
       if (pdfDocRef.current) { pdfDocRef.current.destroy(); pdfDocRef.current = null; }
     };
-  }, [book.id, roomId, socket, pdfRequestSent]);
+  }, [book.id, roomId, socket, pdfRequestSent, userId, isAdmin]);
+  
   const handlePageChange = (newPage: number) => {
     if (newPage < 0 || newPage >= totalPages || newPage === currentPage) return;
     setDirection(newPage > currentPage ? 1 : -1);
@@ -518,10 +522,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
     const updated = annotations.map(a => a.id === editingAnnoId ? { ...a, ...updates } : a);
     setAnnotations(updated); storageService.updateBookAnnotations(book.id, updated);
   };
-  // Removed periodic 60s auto-save to prevent double counting and ensure 
-  // that we only save once on exit with the full accurate session time.
-  // This also fixes the "0m" notification bug by ensuring the full session 
-  // is committed to storage before the notification manager reads it.
   return (
     <div className={`fixed inset-0 z-[1000] bg-black flex flex-col ${fontClass} select-none overflow-hidden`} onMouseMove={handleUserActivity} onTouchStart={handleUserActivity}>
       <AnimatePresence>
@@ -529,9 +529,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           <MotionHeader key="header" initial={{ y: -100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -100, opacity: 0 }} className="fixed top-0 left-0 right-0 p-2 md:p-6 flex items-center justify-between z-[1100] bg-black/80 backdrop-blur-2xl border-b border-white/10 pointer-events-auto">
             <div className="flex items-center gap-1.5 md:gap-3">
               <button onClick={() => {
-                // IMMEDIATE timer kill — zero phantom seconds
                 if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-                // Sync remaining unsaved seconds BEFORE navigating back
                 const delta = sessionSecondsRef.current - lastSyncedSecondsRef.current;
                 if (delta > 0) {
                   storageService.updateBookStats(book.id, delta);
@@ -581,7 +579,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
                   });
                 }}
               >
-                {/* VIRTUALIZED: Only render visible thumbnails + buffer */}
                 <div style={{ height: `${totalPages * 120}px`, position: 'relative' }}>
                   {Array.from({ length: Math.min(thumbRange.end, totalPages) - thumbRange.start }, (_, i) => {
                     const idx = thumbRange.start + i;
@@ -650,7 +647,6 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
         <AnimatePresence>
           {showControls && (
             <MotionDiv key="bottom-controls" initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }} className="flex flex-col items-center gap-4 pointer-events-auto">
-              
               <AnimatePresence>
                 {isToolsOpen && (
                   <MotionDiv key="tools" initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }} className="bg-black/80 backdrop-blur-3xl border border-white/10 px-4 py-2 rounded-full shadow-4xl flex items-center gap-3 mb-2">
