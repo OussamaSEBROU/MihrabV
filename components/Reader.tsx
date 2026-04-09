@@ -18,7 +18,7 @@ import {
 import { Socket } from 'socket.io-client';
 import Peer from 'simple-peer';
 declare const pdfjsLib: any;
-const MotionDiv = motion.div as any;
+// const MotionDiv = motion.div as any;
 const MotionHeader = motion.header as any;
 interface ReaderProps {
   book: Book;
@@ -391,12 +391,14 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           thumbRendering = false;
         };
         
-        const WINDOW = 2;
+        const WINDOW = 1; // Reduced window for massive PDFs
         const enqueueWindow = (center: number, isThumbnailRequest = false) => {
-          // ── MEMORY EVICTION ──
+          // ── AGGRESSIVE MEMORY EVICTION ──
           Object.keys(pageSlots).forEach(key => {
             const idx = parseInt(key);
             if (Math.abs(idx - center) > WINDOW + 1) {
+              // Explicitly nullify to help GC
+              pageSlots[idx] = null as any;
               delete pageSlots[idx];
               setPages(prev => {
                 const n = { ...prev };
