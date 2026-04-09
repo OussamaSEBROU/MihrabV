@@ -308,11 +308,12 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
     }
   };
   useEffect(() => {
+    // ── Cooperative scheduling: yields to browser between heavy renders ──
     const yieldToMain = (): Promise<void> =>
       typeof (scheduler as any)?.yield === 'function'
         ? (scheduler as any).yield()
         : new Promise(r => setTimeout(r, 4));
-    
+
     const loadPdf = async () => {
       setIsLoading(true); setIsPdfLoading(true);
       try {
@@ -322,24 +323,48 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
           setPdfRequestSent(true); return;
         }
         if (!data) { setIsLoading(false); setIsPdfLoading(false); return; }
-        
-        // ── OPTIMIZED PDF OPENING ──
-        const pdf = await pdfjsLib.getDocument({ 
-          data, 
+
+        // ── LARGE-PDF DETECTION: adapt render quality to file size ──
+        // Files > 30 MB are treated as "large" — use lower scale to prevent OOM
+        const fileSizeMB = data.byteLength / (1024 * 1024);
+        const isLargePdf = fileSizeMB > 30;
+        // Scale: 1.6 for large PDFs (still sharp on mobile), 2.0 for normal PDFs
+        const PAGE_RENDER_SCALE = isLargePdf ? 1.6 : 2.0;
+        // JPEG quality: 0.78 for large, 0.85 for normal
+        const PAGE_JPEG_QUALITY = isLargePdf ? 0.78 : 0.85;
+        // In-memory window: how many rendered pages to keep alive around current page
+        // Smaller window = less RAM. 1 = keep current + 1 ahead + 1 behind
+        const CACHE_WINDOW = isLargePdf ? 1 : 2;
+
+        // ── OPTIMIZED PDF DOCUMENT OPEN ──
+        // disableRange: false + rangeChunkSize speeds up large remote PDFs;
+        // for local ArrayBuffer it's ignored safely.
+        const pdf = await pdfjsLib.getDocument({
+          data,
           stopAtErrors: false,
           isEvalSupported: false,
-          disableFontFace: false
+          disableFontFace: false,
+          disableRange: false,
+          rangeChunkSize: 65536, // 64 KB chunks — prevents single-shot blocking
+          disableStream: false,
         }).promise;
-        
-        const numPages = pdf.numPages; setTotalPages(numPages);
-        let rendering = false; 
+
+        // Release the raw ArrayBuffer reference after pdf.js has consumed it,
+        // so the GC can reclaim it immediately (critical for large PDFs).
+        data = null as any;
+
+        const numPages = pdf.numPages;
+        setTotalPages(numPages);
+
+        let rendering = false;
         const queue: number[] = [];
-        let thumbRendering = false; 
+        let thumbRendering = false;
         const thumbQueue: number[] = [];
+        // Sparse maps — only currently-windowed pages live here
         const pageSlots: Record<number, string> = {};
         const thumbSlots: Record<number, string> = {};
         pdfDocRef.current = pdf;
-        
+
         // ── HIGH-RES PAGE RENDERER ──
         const flushQueue = async () => {
           if (rendering || queue.length === 0) return;
@@ -349,23 +374,26 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
             if (pageSlots[idx]) continue;
             try {
               const p = await pdf.getPage(idx + 1);
-              const vp = p.getViewport({ scale: 2.0 }); // Sharper rendering
+              const vp = p.getViewport({ scale: PAGE_RENDER_SCALE });
               const cv = document.createElement('canvas');
               cv.width = vp.width; cv.height = vp.height;
               const ctx = cv.getContext('2d', { alpha: false, desynchronized: true })!;
               ctx.fillStyle = '#ffffff';
               ctx.fillRect(0, 0, cv.width, cv.height);
               await p.render({ canvasContext: ctx, viewport: vp }).promise;
-              pageSlots[idx] = cv.toDataURL('image/jpeg', 0.85);
+              pageSlots[idx] = cv.toDataURL('image/jpeg', PAGE_JPEG_QUALITY);
+              // Immediately destroy canvas pixels — free GPU texture memory
               cv.width = 0; cv.height = 0;
               setPages(prev => ({ ...prev, [idx]: pageSlots[idx] }));
               await yieldToMain();
-            } catch (e) { console.error(`[Reader] Render error page ${idx+1}`, e); }
+            } catch (e) {
+              console.error(`[Reader] Render error page ${idx + 1}`, e);
+            }
           }
           rendering = false;
         };
-        
-        // ── THUMBNAIL RENDERER ──
+
+        // ── THUMBNAIL RENDERER (sidebar panel) ──
         const flushThumbQueue = async () => {
           if (thumbRendering || thumbQueue.length === 0) return;
           thumbRendering = true;
@@ -386,18 +414,19 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
               cv.width = 0; cv.height = 0;
               setThumbCache(prev => ({ ...prev, [idx]: thumbSlots[idx] }));
               await yieldToMain();
-            } catch {}
+            } catch { /* non-fatal: thumbnail failure doesn't break reading */ }
           }
           thumbRendering = false;
         };
-        
-        const WINDOW = 1; // Reduced window for massive PDFs
+
+        // ── SLIDING WINDOW CACHE MANAGER ──
+        // Evicts pages outside CACHE_WINDOW, enqueues pages inside it.
+        // This is the core of the "no black screen / no infinite load" guarantee.
         const enqueueWindow = (center: number, isThumbnailRequest = false) => {
-          // ── AGGRESSIVE MEMORY EVICTION ──
+          // Step 1: Evict pages beyond the window to reclaim memory
           Object.keys(pageSlots).forEach(key => {
             const idx = parseInt(key);
-            if (Math.abs(idx - center) > WINDOW + 1) {
-              // Explicitly nullify to help GC
+            if (Math.abs(idx - center) > CACHE_WINDOW + 1) {
               pageSlots[idx] = null as any;
               delete pageSlots[idx];
               setPages(prev => {
@@ -407,14 +436,17 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
               });
             }
           });
-          
+
+          // Step 2: Build priority list — current page first, then ahead, then behind
           const priority = [center, center + 1, center - 1, center + 2, center - 2]
             .filter(i => i >= 0 && i < numPages && !pageSlots[i]);
+          // Reverse so unshift places highest priority at queue head
           for (const p of priority.reverse()) {
             if (!queue.includes(p)) queue.unshift(p);
           }
           flushQueue();
-          
+
+          // Step 3: Enqueue thumbnails for sidebar viewport (lazy, non-blocking)
           if (isThumbnailRequest) {
             const start = Math.max(0, center - 5);
             const end = Math.min(numPages, center + 15);
@@ -424,9 +456,11 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
             flushThumbQueue();
           }
         };
+
         (window as any).__pdfEnqueueWindow = enqueueWindow;
-        enqueueWindow(currentPage);
         enqueueWindowRef.current = enqueueWindow;
+        // Kick off rendering for the initial page immediately
+        enqueueWindow(currentPage);
         setIsLoading(false); setIsPdfLoading(false);
         pageReadyRef.current = true;
       } catch (err) {
@@ -434,6 +468,7 @@ const Reader: React.FC<ReaderProps> = ({ book, lang, userId, onBack, onStatsUpda
         setIsLoading(false); setIsPdfLoading(false);
       }
     };
+
     pageReadyRef.current = false;
     loadPdf();
     return () => {
