@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build & Sign Android (Eternal Pipeline)
 
 on:
   push:
@@ -32,50 +32,42 @@ jobs:
       - name: Build Web App
         run: npm run build
 
-      - name: Initialize Capacitor Android
-        run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-
       - name: Sync Capacitor
-        run: npx cap sync android
+        run: |
+          npx cap add android || true
+          npx cap sync android
 
-      - name: Generate Mobile Assets
-        run: npm run mobile:assets
+      # ── فك تشفير المفتاح الثابت من الأسرار ──
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/mihrab-release.jks
 
-      # ── الإصلاح التقني: توقيع ثابت ورقم إصدار تصاعدي ──
-      - name: Configure Stable Signing and Versioning
+      # ── إعداد التوقيع الثابت ──
+      - name: Configure Stable Signing
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           GRADLE_FILE="android/app/build.gradle"
-          
-          # إنشاء مفتاح توقيع (Keystore) ثابت لضمان تطابق التوقيع في كل تحديث
-          keytool -genkey -v -keystore my-release-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias my-alias -storepass password -keypass password -dname "CN=Sanctuary, OU=Dev, O=Sanctuary, L=City, S=State, C=US"
-          mv my-release-key.jks android/app/
-          
-          # حقن إعدادات التوقيع وزيادة رقم الإصدار برمجياً عبر بايثون لضمان الدقة
           python3 -c "
-          import sys, os, re
+          import os, re
           content = open('$GRADLE_FILE').read()
-          
-          signing_config = '''
+          signing_config = \"\"\"
               signingConfigs {
                   release {
-                      storeFile file('my-release-key.jks')
-                      storePassword 'password'
-                      keyAlias 'my-alias'
-                      keyPassword 'password'
+                      storeFile file('mihrab-release.jks')
+                      storePassword '$KS_PASS'
+                      keyAlias '$KEY_ALIAS'
+                      keyPassword '$KEY_PASS'
                   }
               }
-          '''
-          
+          \"\"\"
           if 'signingConfigs' not in content:
               content = content.replace('android {', 'android {' + signing_config)
+          content = content.replace('buildTypes {', 'buildTypes {\\n        release {\\n            signingConfig signingConfigs.release\\n        }')
           
-          # ربط التوقيع بالـ Debug والـ Release لضمان قبول التحديث دائماً
-          content = content.replace('buildTypes {', 'buildTypes {\n        release {\n            signingConfig signingConfigs.release\n        }\n        debug {\n            signingConfig signingConfigs.release\n        }')
-          
-          # رفع رقم الإصدار (versionCode) تلقائياً بناءً على رقم العملية في GitHub
+          # رفع رقم الإصدار تلقائياً
           run_number = os.getenv('GITHUB_RUN_NUMBER', '1')
           content = re.sub(r'versionCode \d+', f'versionCode {run_number}', content)
           
@@ -83,14 +75,14 @@ jobs:
               f.write(content)
           "
 
-      - name: Build Android APK
+      - name: Build Release APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
 
-      - name: Upload Debug APK
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: sanctuary-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: mihrab-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
