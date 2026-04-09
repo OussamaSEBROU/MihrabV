@@ -1,5 +1,46 @@
 import { Book, ShelfData } from '../types';
 import { pdfStorage } from './pdfStorage';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+
+// ─── Capacitor-native file share helper ──────────────────────────────────────
+// navigator.share({ files }) does NOT open the native share sheet reliably
+// inside a Capacitor WebView on Android. The correct path is:
+//   1. Write the blob to Cache directory via @capacitor/filesystem
+//   2. Call @capacitor/share with the resulting file URI
+//   3. Delete the temp file after a short delay
+const _capacitorShareBlob = async (
+  blob: Blob,
+  filename: string,
+  // title: string,
+  text: string,
+): Promise<void> => {
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  const written = await Filesystem.writeFile({
+    path: filename,
+    data: base64,
+    directory: Directory.Cache,
+    recursive: true,
+  });
+
+  await Share.share({
+    title,
+    text,
+    url: written.uri,
+    dialogTitle: title,
+  });
+
+  setTimeout(async () => {
+    try { await Filesystem.deleteFile({ path: filename, directory: Directory.Cache }); }
+    catch { /* ignore */ }
+  }, 30_000);
+};
 
 // ─── JSZip Loader: Guaranteed single-load with full error recovery ───────────
 let _jsZipPromise: Promise<any> | null = null;
@@ -127,27 +168,12 @@ export const communityService = {
     });
 
     const safeTitle = book.title.replace(/[^\w\u0600-\u06FF]/g, '_');
-    const file = new File([content], `${safeTitle}.mbook`, { type: 'application/zip' });
+    const filename = `${safeTitle}.mbook`;
+    const shareText = lang === 'ar'
+      ? `شارك معي هذا الكتاب من المحراب: ${book.title}`
+      : `Check out this book from Mihrab: ${book.title}`;
 
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: book.title,
-        text:
-          lang === 'ar'
-            ? `شارك معي هذا الكتاب من المحراب: ${book.title}`
-            : `Check out this book from Mihrab: ${book.title}`,
-      });
-    } else {
-      const uri = URL.createObjectURL(content);
-      const link = document.createElement('a');
-      link.href = uri;
-      link.download = `${safeTitle}.mbook`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(uri), 10_000);
-    }
+    await _capacitorShareBlob(content, filename, book.title, shareText);
   },
 
   importFile: async (file: File): Promise<{ shelf: ShelfData; books: Book[] }> => {
@@ -299,30 +325,12 @@ export const communityService = {
 
     const safeShelfName = shelf.name.replace(/[^\w\u0600-\u06FF]/g, '_');
     const filename = `Mihrab_${safeShelfName}_${Date.now()}.zip`;
-    const file = new File([content], filename, { type: 'application/zip' });
+    const shareText = lang === 'ar'
+      ? `شارك معي هذا الرف من المحراب: ${shelf.name}`
+      : `Check out this shelf from Mihrab: ${shelf.name}`;
 
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: shelf.name,
-        text:
-          lang === 'ar'
-            ? `شارك معي هذا الرف من المحراب: ${shelf.name}`
-            : `Check out this shelf from Mihrab: ${shelf.name}`,
-      });
-      return { success: true, method: 'native' };
-    }
-
-    // Fallback: trigger download
-    const uri = URL.createObjectURL(content);
-    const link = document.createElement('a');
-    link.href = uri;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => URL.revokeObjectURL(uri), 10_000);
-    return { success: true, method: 'download' };
+    await _capacitorShareBlob(content, filename, shelf.name, shareText);
+    return { success: true, method: 'native' };
   },
 
   downloadFile: async (uri: string, filename: string, _lang: string): Promise<void> => {
