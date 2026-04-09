@@ -1,4 +1,4 @@
-name: Build & Sign Mihrab APK (Eternal Pipeline)
+name: Build & Sign Mihrab (Permanent Key + Assets Fix)
 
 on:
   push:
@@ -30,16 +30,27 @@ jobs:
       - name: Build Web App
         run: npm run build
 
-      - name: Sync Capacitor
+      # ── الجزي الخاص بالأيقونات والسمات البصرية ──
+      - name: Generate Mobile Assets (Icons & Splash)
         run: |
+          # إضافة Capacitor Android إذا لم يكن موجوداً
           npx cap add android || true
+          
+          # تثبيت وتوليد الأيقونات من ملفاتك الأصلية
+          npm install @capacitor/assets --save-dev
+          
+          # استبدال الأيقونات الافتراضية بأيقونات "المحراب"
+          # يفترض هذا الأمر وجود ملف icon.png في المجلد الرئيسي أو مجلد assets
+          npx capacitor-assets generate --android || echo "Icon generation skipped (using defaults if icon.png not found)"
+          
+          # مزامنة التغييرات
           npx cap sync android
 
       - name: Decode Keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/mihrab-release.jks
 
-      - name: Configure Gradle Signing
+      - name: Configure Gradle Signing & Versioning
         env:
           KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -49,6 +60,7 @@ jobs:
           python3 -c "
           import os, re
           content = open('$GRADLE_FILE').read()
+          
           signing_config = \"\"\"
               signingConfigs {
                   release {
@@ -59,11 +71,13 @@ jobs:
                   }
               }
           \"\"\"
+          
           if 'signingConfigs' not in content:
               content = content.replace('android {', 'android {' + signing_config)
+          
           content = content.replace('buildTypes {', 'buildTypes {\\n        release {\\n            signingConfig signingConfigs.release\\n        }')
           
-          # رفع رقم الإصدار تلقائياً
+          # رفع رقم الإصدار تلقائياً بناءً على رقم العملية
           run_number = os.getenv('GITHUB_RUN_NUMBER', '1')
           content = re.sub(r'versionCode \d+', f'versionCode {run_number}', content)
           
@@ -80,5 +94,5 @@ jobs:
       - name: Upload Final APK
         uses: actions/upload-artifact@v4
         with:
-          name: mihrab-final-apk
+          name: mihrab-final-release
           path: android/app/build/outputs/apk/release/app-release.apk
