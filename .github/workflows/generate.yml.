@@ -1,0 +1,10 @@
+name: Generate My Key
+on: workflow_dispatch
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Key
+        run: |
+          keytool -genkey -v -keystore mihrab.jks -keyalg RSA -keysize 2048 -validity 10000 -alias mihrab-key -storepass password123 -keypass password123 -dname "CN=Mihrab"
+          base64 -w 0 mihrab.jks
